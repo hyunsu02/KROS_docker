@@ -18,6 +18,11 @@ RUN apt-get update && apt-get install -y sudo
 RUN sudo apt update && sudo apt install -y locales
 RUN sudo locale-gen en_US en_US.UTF-8
 RUN sudo update-locale LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8
+
+# [CHANGED] locale를 다음 레이어에도 유지시키기 위해 ENV로 고정
+ENV LANG=en_US.UTF-8
+ENV LC_ALL=en_US.UTF-8
+
 RUN export LANG=en_US.UTF-8
 RUN locale  # verify settings
 RUN sudo apt install software-properties-common -y
@@ -178,18 +183,9 @@ WORKDIR /root/kros_ws/src/px4_ros_com/scripts
 RUN bash -c './build_ros2_workspace.bash'
 
 # ==============================================================================
-# [ADDED] 오프보드 패키지 설치(클론 + 패키지명 자동추출 후 해당 패키지들만 빌드)
+# [ADDED] 오프보드 패키지 설치(클론만 먼저)
 WORKDIR /root/kros_ws/src
 RUN git clone -b offboard https://github.com/jh-lee01/offboard.git
-WORKDIR /root/kros_ws
-RUN OFFBOARD_PKGS="$(python3 - <<'PY'\nimport glob\nimport xml.etree.ElementTree as ET\npkgs=set()\nfor p in glob.glob('/root/kros_ws/src/offboard/**/package.xml', recursive=True):\n    try:\n        root=ET.parse(p).getroot()\n        name=root.findtext('name')\n        if name:\n            pkgs.add(name.strip())\n    except Exception:\n        pass\nprint(' '.join(sorted(pkgs)))\nPY\n)" && \
-    echo "Detected offboard ROS packages: ${OFFBOARD_PKGS}" && \
-    if [ -n "${OFFBOARD_PKGS}" ]; then \
-      . /opt/ros/humble/setup.sh && \
-      colcon build --symlink-install --packages-select ${OFFBOARD_PKGS}; \
-    else \
-      echo "No ROS2 packages detected under /root/kros_ws/src/offboard (no package.xml found)."; \
-    fi
 
 
 # install zed wrapper
@@ -211,6 +207,18 @@ WORKDIR /root/kros_ws
 RUN rosdep init || true
 RUN rosdep update
 RUN rosdep install --from-paths /root/kros_ws/src --ignore-src -r -y
+
+# ==============================================================================
+# [CHANGED] 오프보드 패키지 빌드 위치를 rosdep install 이후로 이동(의존성 설치 후 빌드)
+WORKDIR /root/kros_ws
+RUN OFFBOARD_PKGS="$(python3 - <<'PY'\nimport glob\nimport xml.etree.ElementTree as ET\npkgs=set()\nfor p in glob.glob('/root/kros_ws/src/offboard/**/package.xml', recursive=True):\n    try:\n        root=ET.parse(p).getroot()\n        name=root.findtext('name')\n        if name:\n            pkgs.add(name.strip())\n    except Exception:\n        pass\nprint(' '.join(sorted(pkgs)))\nPY\n)" && \
+    echo "Detected offboard ROS packages: ${OFFBOARD_PKGS}" && \
+    if [ -n "${OFFBOARD_PKGS}" ]; then \
+      . /opt/ros/humble/setup.sh && \
+      colcon build --symlink-install --packages-select ${OFFBOARD_PKGS}; \
+    else \
+      echo "No ROS2 packages detected under /root/kros_ws/src/offboard (no package.xml found)."; \
+    fi
 
 RUN . /opt/ros/humble/setup.sh && \
     colcon build --symlink-install --packages-up-to zed_wrapper --allow-overriding image_transport --cmake-args -DCMAKE_BUILD_TYPE=Release -DCMAKE_LIBRARY_PATH=/usr/local/cuda/lib64/stubs -DCMAKE_CXX_FLAGS="-Wl,--allow-shlib-undefined" --parallel-workers $(nproc)
@@ -258,4 +266,3 @@ WORKDIR /root/kros_ws
 
 RUN . /opt/ros/humble/setup.sh && \
     colcon build --symlink-install --packages-up-to usb_cam
-
