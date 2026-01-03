@@ -1,6 +1,7 @@
 # given by command,
-#   sudo docker pull stereolabs/zed:4.0-tools-devel-jetson-jp6.0
-FROM stereolabs/zed:4.0-tools-devel-jetson-jp6.0
+#   docker pull stereolabs/zed:5.1.0-tools-devel-l4t-r36.4
+# [CHANGED] JP6.0 태그는 Docker Hub에 없어서, JP6.2(L4T r36.4 계열)용으로 존재하는 태그로 교체
+FROM stereolabs/zed:5.1.0-tools-devel-l4t-r36.4
 
 ENV ROS_DISTRO=humble
 ENV ROS_VERSION=2
@@ -10,7 +11,11 @@ ENV LD_LIBRARY_PATH ${LD_LIBRARY_PATH}:/usr/lib/aarch64-linux-gnu/tegra
 
 # install ROS
 RUN locale  # check for UTF-8
-RUN sudo apt update && sudo apt install locales
+# (sudo가 없는 베이스 이미지일 수 있어 최소 추가)
+RUN apt-get update && apt-get install -y sudo
+
+# [CHANGED] -y 추가(빌드 중 인터랙티브 프롬프트 방지)
+RUN sudo apt update && sudo apt install -y locales
 RUN sudo locale-gen en_US en_US.UTF-8
 RUN sudo update-locale LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8
 RUN export LANG=en_US.UTF-8
@@ -73,7 +78,8 @@ RUN python3 -m pip install -U \
                     pytest
 
 # install dependencies
-RUN sudo apt install --no-install-recommends \
+# [CHANGED] -y 추가(빌드 중 인터랙티브 프롬프트 방지)
+RUN sudo apt install -y --no-install-recommends \
                     libasio-dev \
                     libtinyxml2-dev \
                     libcunit1-dev
@@ -112,7 +118,7 @@ RUN sudo apt install vim -y
 RUN mkdir -p /root/kros_ws/src
 WORKDIR /root/kros_ws
 RUN . /opt/ros/humble/setup.sh && \
-    colcon build --symlink-install 
+    colcon build --symlink-install
 WORKDIR /root/kros_ws/install
 RUN chmod +x ./local_setup.sh
 
@@ -127,24 +133,47 @@ WORKDIR /root/Fast-RTPS-Gen
 RUN ./gradlew assemble && sudo env "PATH=$PATH" ./gradlew install
 
 RUN sudo apt install ros-humble-eigen3-cmake-module -y
-
 RUN sudo apt install python3-testresources -y
 RUN sudo pip3 install -U empy pyros-genmsg setuptools
 
+# ==============================================================================
+# [ADDED] Micro-XRCE-DDS-Agent 설치 (PX4 1.16 계열에서 주로 2.4.x 사용)
+WORKDIR /root
+RUN git clone -b v2.4.3 https://github.com/eProsima/Micro-XRCE-DDS-Agent.git
+WORKDIR /root/Micro-XRCE-DDS-Agent/build
+RUN cmake .. && \
+    make -j"$(nproc)" && \
+    sudo make install && \
+    sudo ldconfig
+
 
 # build px4_ros_com_ros2
+# [CHANGED] release/1.13 -> release/1.16 (요청사항)
 WORKDIR /root/kros_ws/src
-RUN git clone -b release/1.13 https://github.com/PX4/px4_ros_com.git
-RUN git clone -b release/1.13 https://github.com/PX4/px4_msgs.git
+RUN git clone -b release/1.16 https://github.com/PX4/px4_ros_com.git
+RUN git clone -b release/1.16 https://github.com/PX4/px4_msgs.git
 WORKDIR /root/kros_ws/src/px4_ros_com/scripts
 RUN bash -c './build_ros2_workspace.bash'
 
+# ==============================================================================
+# [ADDED] 오프보드 패키지 설치(클론 + 패키지명 자동추출 후 해당 패키지들만 빌드)
+WORKDIR /root/kros_ws/src
+RUN git clone -b offboard https://github.com/jh-lee01/offboard.git
+WORKDIR /root/kros_ws
+RUN OFFBOARD_PKGS="$(python3 - <<'PY'\nimport glob\nimport xml.etree.ElementTree as ET\npkgs=set()\nfor p in glob.glob('/root/kros_ws/src/offboard/**/package.xml', recursive=True):\n    try:\n        root=ET.parse(p).getroot()\n        name=root.findtext('name')\n        if name:\n            pkgs.add(name.strip())\n    except Exception:\n        pass\nprint(' '.join(sorted(pkgs)))\nPY\n)" && \
+    echo "Detected offboard ROS packages: ${OFFBOARD_PKGS}" && \
+    if [ -n "${OFFBOARD_PKGS}" ]; then \
+      . /opt/ros/humble/setup.sh && \
+      colcon build --symlink-install --packages-select ${OFFBOARD_PKGS}; \
+    else \
+      echo "No ROS2 packages detected under /root/kros_ws/src/offboard (no package.xml found)."; \
+    fi
 
 
 # install zed wrapper
 RUN sudo apt remove -y ros-humble-image-transport-plugins ros-humble-compressed-depth-image-transport ros-humble-compressed-image-transport
 WORKDIR /root/kros_ws/src
-RUN git clone https://github.com/ros-perception/image_common.git --branch 3.0.0 --single-branch # clone the "v3.0.0" branch of the "image_common" repository
+RUN git clone https://github.com/ros-perception/image_common.git --branch 3.0.0 --single-branch
 WORKDIR /root/kros_ws
 
 RUN . /opt/ros/humble/setup.sh && \
@@ -157,7 +186,7 @@ RUN . /opt/ros/humble/setup.sh
 WORKDIR /root/kros_ws/src
 RUN git clone  --recursive https://github.com/stereolabs/zed-ros2-wrapper.git
 WORKDIR /root/kros_ws
-RUN rosdep init
+RUN rosdep init || true
 RUN rosdep update
 RUN rosdep install --from-paths /root/kros_ws/src --ignore-src -r -y
 
@@ -166,7 +195,7 @@ RUN . /opt/ros/humble/setup.sh && \
 
 # build zed-rgb convert
 WORKDIR /root/kros_ws/src
-RUN git clone https://github.com/joony414/custom_zed_rgb_convert 
+RUN git clone https://github.com/joony414/custom_zed_rgb_convert
 WORKDIR /root/kros_ws
 
 RUN . /opt/ros/humble/setup.sh && \
@@ -181,7 +210,6 @@ RUN python3 -m pip install -U pip
 RUN python3 -m pip install "ultralytics[export]"
 
 # JetPack 6 (Python 3.10) - install Jetson-compatible PyTorch/Torchvision wheels
-# (NVIDIA forum에서 안내된 실동작 커맨드 기반)  :contentReference[oaicite:4]{index=4}
 RUN python3 -m pip uninstall -y torch torchvision torchaudio || true
 RUN python3 -m pip install \
     https://developer.download.nvidia.com/compute/redist/jp/v60/pytorch/torch-2.4.0a0+07cecf4168.nv24.05.14710581-cp310-cp310-linux_aarch64.whl
@@ -194,7 +222,7 @@ RUN wget https://nvidia.box.com/shared/static/9si945yrzesspmg9up4ys380lqxjylc3.w
     python3 -m pip install torchaudio-2.3.0+952ea74-cp310-cp310-linux_aarch64.whl && \
     rm -f torchaudio-2.3.0+952ea74-cp310-cp310-linux_aarch64.whl
 
-# onnxruntime-gpu (JetPack 6 + Python3.10) - Ultralytics Jetson guide  :contentReference[oaicite:5]{index=5}
+# onnxruntime-gpu (JetPack 6 + Python3.10)
 RUN python3 -m pip install \
     https://github.com/ultralytics/assets/releases/download/v0.0.0/onnxruntime_gpu-1.23.0-cp310-cp310-linux_aarch64.whl
 
