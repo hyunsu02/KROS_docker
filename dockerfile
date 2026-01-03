@@ -62,6 +62,28 @@ RUN apt install -y \
                     python3-vcstool \
                     wget
 
+#  QGroundControl prerequisites (Ubuntu 22.04/24.04)
+# - GStreamer: video streaming support
+# - libfuse2, XCB/XKB libs: AppImage/Qt 런타임에서 자주 요구
+# - Remove ModemManager: serial 포트 점유 방지(컨테이너 내부 기준)
+RUN sudo apt-get update && sudo apt-get install -y \
+    gstreamer1.0-plugins-bad \
+    gstreamer1.0-libav \
+    gstreamer1.0-gl \
+    libfuse2 \
+    libxcb-xinerama0 \
+    libxkbcommon-x11-0 \
+    libxcb-cursor-dev
+
+# ModemManager는 systemd 환경에서 시리얼 포트를 잡을 수 있어 제거/비활성화 권장
+# (컨테이너 내부에 설치돼 있지 않으면 무시되도록 || true)
+RUN sudo apt-get remove --purge -y modemmanager || true
+
+# dialout 그룹: 컨테이너에서 비-root 사용자로 /dev/tty* 접근할 때만 의미 있음
+# (root로만 쓸 거면 사실상 불필요)
+RUN getent group dialout >/dev/null || sudo groupadd dialout
+RUN sudo usermod -aG dialout root || true
+
 # install python packages
 RUN python3 -m pip install -U \
                     argcomplete \
@@ -236,3 +258,4 @@ WORKDIR /root/kros_ws
 
 RUN . /opt/ros/humble/setup.sh && \
     colcon build --symlink-install --packages-up-to usb_cam
+
